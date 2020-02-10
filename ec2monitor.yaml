@@ -2,48 +2,52 @@
 Description: "Template to create an ec2 instance in the private subnet and configure monitoring"
 
 Parameters:
-    EC2InstanceName:
-      Description: "Provide an EC2 instance name"
-      Type: String
-      MinLength: 1
-      MaxLength: 30
-    AMI:
-      Description: Enter the AMI image id to be used for the instance
-      Default:
-      Type: String 
-    InstanceType: 
-      Type: String
-      Default: t2.small
-      AllowedValues: 
-        - t2.micro
-        - t2.small
-        - t2.medium
-        - t2.large
-      Description: Default is t2.small
-    Environment:
-      Type: String
-      AllowedValues: [ dev, prod ]
-      Default: dev
-      Description: Abbreviated Environment Name
-    SSHKeyName:
-      Type: String
-      Description: Enter the ssh keypair name to be associated with the instance
-    VPC:
-      Type: String
-      Description: Enter the VPC ID to be used 
-    Subnet:
-      Type: String
-      Description: Enter the subnetID associated with the VPC 
-    SourceIP:
-      Type: String
-      Description: Enter the source IP to allow connection to port 22 for the ec2 instance in CIDR format
-    PagerdutyRoute:
-      Type: String
-      Description: Enter the pagerduty event queue URL to allow monitoring alerts
-    Email:
-      Type: String
-      Description: Enter the email address to be added for sending out monitoring alerts 
+  EC2InstanceName:
+    Description: "Provide an EC2 instance name"
+    Type: String
+    MinLength: 1
+    MaxLength: 30
+  AMI:
+    Description: Enter the AMI image id to be used for the instance, default:Amazon LInux2
+    Default: ami-0e05097610fae5559
+    Type: String 
+  InstanceType: 
+    Type: String
+    Default: t2.small
+    AllowedValues: 
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+    Description: Default is t2.small
+  Environment:
+    Type: String
+    AllowedValues: [ dev, prod ]
+    Default: dev
+    Description: Abbreviated Environment Name
+  SSHKeyName:
+    Type: String
+    Description: Enter the ssh keypair name to be associated with the instance
+  VPC:
+    Type: String
     
+    Description: Enter the VPC ID to be used 
+  Subnet:
+    Type: String
+   
+    Description: Subnet in which to create container instances. Should be private subnets. 
+  SourceIP:
+    Type: String
+
+    Description: Enter the source IP to allow connection to port 22 for the ec2 instance in CIDR format
+  #PagerdutyRoute:
+  #  Type: String
+  #  Description: Enter the pagerduty event queue URL to allow monitoring alerts
+  Email:
+    Type: String
+    Description: Enter the email address to be added for sending out monitoring alerts   
+#Conditions:
+#  CreateProdAlarm: !Equals [ !Ref Environment, prod ]
 Resources:
   IamRole: 
     Type: "AWS::IAM::Role"
@@ -84,10 +88,11 @@ Resources:
         KeyName: !Ref SSHKeyName
         InstanceType: !Ref InstanceType
         SubnetId: !Ref Subnet
-        SecurityGroupIds: !Ref SecurityGroup
+        SecurityGroupIds:
+          - !Ref SecurityGroup
         Tags:
           - Key: Name
-            Value: '!Ref EC2Instance'
+            Value: !Ref EC2InstanceName
   IPAddress:
     Type: AWS::EC2::EIP
   IPAssoc:
@@ -99,7 +104,7 @@ Resources:
   CloudWatchDashboardHOSTNAME:
     Type: "AWS::CloudWatch::Dashboard"
     Properties:
-      DashboardName: !Ref EC2Instance
+      DashboardName: !Ref EC2InstanceName
       DashboardBody: { "Fn::Join": [ "", ['{"widgets":[
           {
             "type":"metric",
@@ -125,28 +130,28 @@ Resources:
               "region":"us-east-1"
             }
 
-          }]}' ] ] } 
+          }]}' ] ] }
 
-#      DependsOn: EC2Instance
-  SnsTopicForPagerduty:
-    Type: "AWS::SNS::Topic"
-    Properties:
-        Subscription:
-          -
-            Endpoint: !Ref PagerdutyRoute
-            Protocol: "https"
+#  SnsTopicForPagerduty:
+#    Type: AWS::SNS::Topic
+#    Condition: CreateProdAlarm
+#    Properties:
+#      Subscription:
+#        -
+#          Endpoint: !Ref PagerdutyRoute
+#          Protocol: "https"
   SnsTopicForEmail:
     Type: "AWS::SNS::Topic"
     Properties:
-        Subscription:
-          -
-            Endpoint: !Ref Email
-            Protocol: "email"       
+      Subscription:
+        -
+          Endpoint: !Ref Email
+          Protocol: "email"       
   InstanceStateUnavailable:
     Type: AWS::Events::Rule
     Properties:
       Description: Send notification that instance state has changed.
-      Name: !Fn:Join ["-", [!Ref Ec2Instance, InstanceStateCheck]]
+      Name: !Join ["-", [!Ref EC2InstanceName, InstanceStateCheck]]
       EventPattern: 
         source: 
         - aws.ec2
@@ -154,7 +159,7 @@ Resources:
         - EC2 Instance State-change Notification
         detail: 
           instance-id: 
-          - !Ref: EC2Instance
+          - !Ref EC2Instance
       State: ENABLED
       Targets:
       - Arn:
@@ -169,7 +174,6 @@ Resources:
             account: "$.account"
           InputTemplate: |
             "At <time>, the status of your EC2 instance <instance-id> on account <account> in the AWS Region <region> has changed to <state>."
-
   EventTopicPolicy:
     Type: 'AWS::SNS::TopicPolicy'
     Properties:
@@ -192,7 +196,7 @@ Resources:
             Resource: '*'
       Topics:
         - !Ref  'SnsTopicForEmail'        
-        - !Ref  'SnsTopicForPagerduty'        
+ #       - !Ref  'SnsTopicForPagerduty'        
 
 Outputs:
   ec2PublicIP:
@@ -207,6 +211,6 @@ Outputs:
   SNSTopicEmail:
     Description: "SNS Email information"
     Value: !Ref SnsTopicForEmail
-  SNSTopicPD:
-    Description: "SNS Pagerduty information"
-    Value: !Ref SnsTopicForPagerduty
+#  SNSTopicPD:
+#    Description: "SNS Pagerduty information"
+#    Value: !Ref SnsTopicForPagerduty
