@@ -1,0 +1,212 @@
+---
+Description: "Template to create an ec2 instance in the private subnet and configure monitoring"
+
+Parameters:
+    EC2InstanceName:
+      Description: "Provide an EC2 instance name"
+      Type: String
+      MinLength: 1
+      MaxLength: 30
+    AMI:
+      Description: Enter the AMI image id to be used for the instance
+      Default:
+      Type: String 
+    InstanceType: 
+      Type: String
+      Default: t2.small
+      AllowedValues: 
+        - t2.micro
+        - t2.small
+        - t2.medium
+        - t2.large
+      Description: Default is t2.small
+    Environment:
+      Type: String
+      AllowedValues: [ dev, prod ]
+      Default: dev
+      Description: Abbreviated Environment Name
+    SSHKeyName:
+      Type: String
+      Description: Enter the ssh keypair name to be associated with the instance
+    VPC:
+      Type: String
+      Description: Enter the VPC ID to be used 
+    Subnet:
+      Type: String
+      Description: Enter the subnetID associated with the VPC 
+    SourceIP:
+      Type: String
+      Description: Enter the source IP to allow connection to port 22 for the ec2 instance in CIDR format
+    PagerdutyRoute:
+      Type: String
+      Description: Enter the pagerduty event queue URL to allow monitoring alerts
+    Email:
+      Type: String
+      Description: Enter the email address to be added for sending out monitoring alerts 
+    
+Resources:
+  IamRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns: 
+      - "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess"
+  IamInstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Path: "/"
+      Roles: 
+        - 
+          Ref: "IamRole"   
+  SecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security Group for ec2instance
+        VpcId: !Ref VPC
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SourceIP
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+        ImageId: !Ref AMI
+        KeyName: !Ref SSHKeyName
+        InstanceType: !Ref InstanceType
+        SubnetId: !Ref Subnet
+        SecurityGroupIds: !Ref SecurityGroup
+        Tags:
+          - Key: Name
+            Value: '!Ref EC2Instance'
+  IPAddress:
+    Type: AWS::EC2::EIP
+  IPAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref EC2Instance
+      EIP: !Ref IPAddress
+  
+  CloudWatchDashboardHOSTNAME:
+    Type: "AWS::CloudWatch::Dashboard"
+    Properties:
+      DashboardName: !Ref EC2Instance
+      DashboardBody: { "Fn::Join": [ "", ['{"widgets":[
+          {
+            "type":"metric",
+            "properties":{
+              "metrics":[
+                ["AWS/EC2","CPUUtilization","InstanceId",
+                 "', { Ref: EC2Instance }, '"] 
+              ],
+              "title":"CPU Utilization",
+              "period":60,
+              "region":"us-east-1"
+            }
+          },
+          {
+            "type":"metric",
+            "properties":{
+              "metrics":[
+                ["AWS/EC2","DiskWriteBytes","InstanceId",
+                 "', { Ref: EC2Instance }, '"] 
+              ],
+              "title":"Disk Write",
+              "period":60,
+              "region":"us-east-1"
+            }
+
+          }]}' ] ] } 
+
+#      DependsOn: EC2Instance
+  SnsTopicForPagerduty:
+    Type: "AWS::SNS::Topic"
+    Properties:
+        Subscription:
+          -
+            Endpoint: !Ref PagerdutyRoute
+            Protocol: "https"
+  SnsTopicForEmail:
+    Type: "AWS::SNS::Topic"
+    Properties:
+        Subscription:
+          -
+            Endpoint: !Ref Email
+            Protocol: "email"       
+  InstanceStateUnavailable:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Send notification that instance state has changed.
+      Name: !Fn:Join ["-", [!Ref Ec2Instance, InstanceStateCheck]]
+      EventPattern: 
+        source: 
+        - aws.ec2
+        detail-type: 
+        - EC2 Instance State-change Notification
+        detail: 
+          instance-id: 
+          - !Ref: EC2Instance
+      State: ENABLED
+      Targets:
+      - Arn:
+          !Ref 'SnsTopicForEmail'
+        Id: SNS  
+        InputTransformer:
+          InputPathsMap: 
+            state: "$.detail.state"
+            instance-id: "$.detail.instance-id"
+            time: "$.time"
+            region: "$.region"
+            account: "$.account"
+          InputTemplate: |
+            "At <time>, the status of your EC2 instance <instance-id> on account <account> in the AWS Region <region> has changed to <state>."
+
+  EventTopicPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: [
+        "SNS:GetTopicAttributes",
+        "SNS:SetTopicAttributes",
+        "SNS:AddPermission",
+        "SNS:RemovePermission",
+        "SNS:DeleteTopic",
+        "SNS:Subscribe",
+        "SNS:ListSubscriptionsByTopic",
+        "SNS:Publish",
+        "SNS:Receive"
+      ] 
+            Resource: '*'
+      Topics:
+        - !Ref  'SnsTopicForEmail'        
+        - !Ref  'SnsTopicForPagerduty'        
+
+Outputs:
+  ec2PublicIP:
+    Description: ec2 Server Public IP
+    Value: !GetAtt EC2Instance.PublicIp
+  InstanceName:
+    Description: "Instance id"
+    Value: !Ref EC2Instance
+  ec2PublicDNS:
+    Description: ec2 Server Public DNS
+    Value: !GetAtt EC2Instance.PublicDnsName
+  SNSTopicEmail:
+    Description: "SNS Email information"
+    Value: !Ref SnsTopicForEmail
+  SNSTopicPD:
+    Description: "SNS Pagerduty information"
+    Value: !Ref SnsTopicForPagerduty
